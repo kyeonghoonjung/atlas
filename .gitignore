@@ -1,6 +1,9 @@
 # Created by https://www.gitignore.io
 
 .DS_Store
+images/*
+*.png
+*.mp4
 
 ### Java ###
 *.class

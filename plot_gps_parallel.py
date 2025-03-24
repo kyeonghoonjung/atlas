@@ -38,8 +38,8 @@ def load_data(export_dir: str, starting_date: str, bounds):
     activity_dict = {}
 
     for activity_filename in filenames:
+        activity_filename = os.path.join(export_dir, activity_filename)
         if '.tcx' in activity_filename:
-            activity_filename = os.path.join(export_dir, activity_filename)
             with gzip.open(activity_filename, 'rb') as f:
                 xml_str = f.read().decode("utf-8")
                 xml_str = re.sub('xmlns=".*?"', '', xml_str)
@@ -48,7 +48,7 @@ def load_data(export_dir: str, starting_date: str, bounds):
                 activities = root.findall('.//Activity')
                 for activity in activities:
                     print(f' loading {activity_filename}:{activity.attrib['Sport']}')
-                    if activity.attrib['Sport'] in ['Biking', 'Running']:
+                    if activity.attrib['Sport'] in ['Biking', 'Running', 'Alpine Ski']:
                         lats = []
                         longs = []
                         alts = []
@@ -66,12 +66,24 @@ def load_data(export_dir: str, starting_date: str, bounds):
                                 'lon': longs,
                                 'alt': alts
                             }
+        elif '.gpx' in activity_filename:
+            with open(activity_filename, "r") as gpx_file:
+                gpx = gpxpy.parse(gpx_file)
+            print(f' loading {activity_filename}')
+            data = {"lat": [], "lon": [], "alt": []}
+            for track in gpx.tracks:
+                for segment in track.segments:
+                    for point in segment.points:
+                        data["lat"].append(point.latitude)
+                        data["lon"].append(point.longitude)
+                        data["alt"].append(point.elevation)  # Elevation in meters
+            activity_dict[f'{activity_filename}'] = data
 
     routes = activity_dict.values()
     # filter routes based on bounds
     routes = list(filter(
-        lambda r: r["lon"][0] > bounds['left'] and r["lon"][0] < bounds['right'] and r["lat"][0] > bounds['bottom'] and
-                  r["lat"][0] < bounds['top'], routes))
+        lambda r: r["lon"][0] > bounds['left'] and r["lon"][0] < bounds['right'] and r["lat"][0] > bounds[
+            'bottom'] and r["lat"][0] < bounds['top'], routes))
     print(len(routes))
     return routes
 
