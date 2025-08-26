@@ -14,7 +14,7 @@ argparse = "^1.4.0"
 numpy = "^2.2.4"
 pandas = "^2.2.3"
 ipython = "^9.0.2"
-
+fitparse = "^1.2.0"
 
 [build-system]
 requires = ["poetry-core"]

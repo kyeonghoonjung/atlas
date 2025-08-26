@@ -1,10 +1,8 @@
 import gpxpy
-import gpxpy.gpx
 import matplotlib.pyplot as plt
 import xml.etree.ElementTree as ET
 import argparse
 import numpy as np
-import zipfile
 import gzip
 import os
 import matplotlib.cm as cm
@@ -16,9 +14,103 @@ import re
 import multiprocessing
 import argparse
 import math
+from fitparse import FitFile
 
 IMG_DIR = "images"
 
+def handle_tcx(activity_filename, activity_dict):
+    with gzip.open(activity_filename, 'rb') as f:
+        xml_str = f.read().decode("utf-8")
+        xml_str = re.sub('xmlns=".*?"', '', xml_str)
+        xml_str = xml_str.replace('          ', '')
+        root = ET.fromstring(xml_str)
+        activities = root.findall('.//Activity')
+        for activity in activities:
+            print(f' loading {activity_filename}:{activity.attrib["Sport"]}')
+            if activity.attrib['Sport'] in ['Biking', 'Running', 'Alpine Ski']:
+                lats = []
+                longs = []
+                alts = []
+                tracking_points = activity.findall('.//Trackpoint')
+                for tracking_point in list(tracking_points):
+                    try:
+                        children = list(tracking_point)
+                        child_names = [child.tag for child in children]
+                        if not ('Position' in child_names):
+                            print(f'  tracking point at {children[0].text} missing Position')
+                            continue
+                        latitude = float(list(children[1])[0].text)
+                        longitude = float(list(children[1])[1].text)
+                        alt = float(children[2].text)
+                        lats.append(latitude)
+                        longs.append(longitude)
+                        alts.append(alt)
+                        activity_dict[f'{activity_filename}'] = {
+                            'lat': lats,
+                            'lon': longs,
+                            'alt': alts
+                        }
+                    except Exception as e:
+                        print(f' error parsing {activity_filename}: {e}. Skipping.')
+                        continue
+
+def handle_gpx(activity_filename, activity_dict):
+    print(f' loading {activity_filename}')
+    if activity_filename.endswith('.gz'):
+        with gzip.open(activity_filename, 'rb') as f:
+            gpx_content = f.read().decode('utf-8')            
+    else:
+        with open(activity_filename, "r") as gpx_file:
+            gpx_content = gpx_file.read()
+
+    try:
+        gpx = gpxpy.parse(gpx_content)
+    except Exception as e:
+        print(f' error parsing {activity_filename}: {e}')
+        return
+    
+    data = {"lat": [], "lon": [], "alt": []}
+    for track in gpx.tracks:
+        for segment in track.segments:
+            for point in segment.points:
+                data["lat"].append(point.latitude)
+                data["lon"].append(point.longitude)
+                data["alt"].append(point.elevation)  # Elevation in meters
+    activity_dict[f'{activity_filename}'] = data
+
+def handle_fit(activity_filename, activity_dict):
+    def get_value(fitfile, message_type, value_type):
+        for message in fitfile.get_messages(message_type):
+            return message.get_value(value_type)
+    try:
+        if activity_filename.endswith('.gz'):
+            with gzip.open(activity_filename, 'rb') as f:
+                fit_data = f.read()
+        else:
+            with open(activity_filename, 'rb') as f:
+                fit_data = f.read()
+        fitfile = FitFile(fit_data)
+        sport = get_value(fitfile, "session", "sport")
+        if sport not in ('running', 'walking', 'cycling'):
+            print(f' skipping {activity_filename}:{sport}')
+            return
+        print(f' loading {activity_filename}:{sport}')
+        data = {"lat": [], "lon": [], "alt": []}
+        for record in fitfile.get_messages('record'):
+            lat = record.get_value('position_lat')
+            lon = record.get_value('position_long')
+            alt = record.get_value('altitude')
+            if lat is not None and lon is not None:
+                lat = lat * (180.0 / 2**31)
+                lon = lon * (180.0 / 2**31)
+                data["lat"].append(lat)
+                data["lon"].append(lon)
+                data["alt"].append(alt if alt is not None else 0)
+        if data["lat"]:
+            activity_dict[f'{activity_filename}'] = data
+    except Exception as e:
+        print(f' error parsing {activity_filename}: {e}')
+        return
 
 def load_data(export_dir: str, starting_date: str, bounds):
     """
@@ -40,51 +132,17 @@ def load_data(export_dir: str, starting_date: str, bounds):
     for activity_filename in filenames:
         activity_filename = os.path.join(export_dir, activity_filename)
         if '.tcx' in activity_filename:
-            with gzip.open(activity_filename, 'rb') as f:
-                xml_str = f.read().decode("utf-8")
-                xml_str = re.sub('xmlns=".*?"', '', xml_str)
-                xml_str = xml_str.replace('          ', '')
-                root = ET.fromstring(xml_str)
-                activities = root.findall('.//Activity')
-                for activity in activities:
-                    print(f' loading {activity_filename}:{activity.attrib['Sport']}')
-                    if activity.attrib['Sport'] in ['Biking', 'Running', 'Alpine Ski']:
-                        lats = []
-                        longs = []
-                        alts = []
-                        tracking_points = activity.findall('.//Trackpoint')
-                        for tracking_point in list(tracking_points):
-                            children = list(tracking_point)
-                            latitude = float(list(children[1])[0].text)
-                            longitude = float(list(children[1])[1].text)
-                            alt = float(children[2].text)
-                            lats.append(latitude)
-                            longs.append(longitude)
-                            alts.append(alt)
-                            activity_dict[f'{activity_filename}'] = {
-                                'lat': lats,
-                                'lon': longs,
-                                'alt': alts
-                            }
+            handle_tcx(activity_filename, activity_dict)
         elif '.gpx' in activity_filename:
-            with open(activity_filename, "r") as gpx_file:
-                gpx = gpxpy.parse(gpx_file)
-            print(f' loading {activity_filename}')
-            data = {"lat": [], "lon": [], "alt": []}
-            for track in gpx.tracks:
-                for segment in track.segments:
-                    for point in segment.points:
-                        data["lat"].append(point.latitude)
-                        data["lon"].append(point.longitude)
-                        data["alt"].append(point.elevation)  # Elevation in meters
-            activity_dict[f'{activity_filename}'] = data
+            handle_gpx(activity_filename, activity_dict)
+        elif '.fit' in activity_filename:
+            handle_fit(activity_filename, activity_dict)
 
     routes = activity_dict.values()
     # filter routes based on bounds
     routes = list(filter(
         lambda r: r["lon"][0] > bounds['left'] and r["lon"][0] < bounds['right'] and r["lat"][0] > bounds[
             'bottom'] and r["lat"][0] < bounds['top'], routes))
-    print(len(routes))
     return routes
 
 
@@ -168,8 +226,8 @@ def main():
     os.makedirs(IMG_DIR, exist_ok=True)
 
     bounds = get_bounding_box(args.latitude, args.longitude, args.radius)
-    print(bounds)
     routes = load_data(args.export_dir, args.starting_date, bounds)
+    print(f"loaded {len(routes)} routes")
     multiprocessing.set_start_method('spawn')
 
     max_len = 0
